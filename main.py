@@ -183,13 +183,13 @@ class BrowserDataExtractor:
             "errors": 0
         }
         
-        print(f"{Fore.CYAN}Windows Universal Browser Data Extractor - Enhanced Version{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}FOR AUTHORIZED DIGITAL FORENSICS AND ACADEMIC RESEARCH ONLY{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}Windows Universal Browser Data Extractor - Enhanced Version)
+        print(f"{Fore.CYAN}{'='*60})
+        print(f"{Fore.YELLOW}FOR AUTHORIZED DIGITAL FORENSICS AND ACADEMIC RESEARCH ONLY)
         print()
         
         self.installed_browsers = self.detect_installed_browsers()
-        print(f"{Fore.GREEN}Detected {len(self.installed_browsers)} installed browsers{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}Detected {len(self.installed_browsers)} installed browsers)
         
     def detect_installed_browsers(self) -> List[str]:
         """Enhanced browser detection using registry and file system"""
@@ -202,7 +202,7 @@ class BrowserDataExtractor:
             if browser_id in self.custom_paths:
                 custom_path = self.custom_paths[browser_id]
                 if os.path.exists(custom_path):
-                    print(f"{Fore.GREEN}Found {config.name} at custom path: {custom_path}{Style.RESET_ALL}")
+                    print(f"{Fore.GREEN}Found {config.name} at custom path: {custom_path})
                     installed.append(browser_id)
                     # Update the config executable path
                     config.executable = custom_path
@@ -211,7 +211,7 @@ class BrowserDataExtractor:
             
             # Check by executable existence
             if config.executable and os.path.exists(config.executable):
-                print(f"{Fore.GREEN}Found {config.name} at: {config.executable}{Style.RESET_ALL}")
+                print(f"{Fore.GREEN}Found {config.name} at: {config.executable})
                 installed.append(browser_id)
                 detected = True
                 continue
@@ -220,7 +220,7 @@ class BrowserDataExtractor:
             if config.registry_paths:
                 for reg_path in config.registry_paths:
                     if self._check_registry_browser(reg_path):
-                        print(f"{Fore.GREEN}Found {config.name} in registry: {reg_path}{Style.RESET_ALL}")
+                        print(f"{Fore.GREEN}Found {config.name} in registry: {reg_path})
                         installed.append(browser_id)
                         detected = True
                         break
@@ -229,7 +229,7 @@ class BrowserDataExtractor:
             if not detected and config.portable_paths:
                 portable_found = self._find_portable_browser(config.portable_paths)
                 if portable_found:
-                    print(f"{Fore.GREEN}Found portable {config.name} at: {portable_found}{Style.RESET_ALL}")
+                    print(f"{Fore.GREEN}Found portable {config.name} at: {portable_found})
                     installed.append(browser_id)
                     config.executable = portable_found
                     detected = True
@@ -911,21 +911,21 @@ class BrowserDataExtractor:
                 cookies_file = f"{browser_filename}_cookies.json"
                 with open(cookies_file, "w", encoding="utf-8") as f:
                     json.dump(browser_data["cookies"], f, indent=2, default=str)
-                print(f"  {Fore.GREEN}✓ Saved {len(browser_data['cookies'])} cookies to {cookies_file}{Style.RESET_ALL}")
+                print(f"  {Fore.GREEN}✓ Saved {len(browser_data['cookies'])} cookies to {cookies_file})
             
             # Save history
             if browser_data.get("history"):
                 history_file = f"{browser_filename}_history.json"
                 with open(history_file, "w", encoding="utf-8") as f:
                     json.dump(browser_data["history"], f, indent=2, default=str)
-                print(f"  {Fore.GREEN}✓ Saved {len(browser_data['history'])} history entries to {history_file}{Style.RESET_ALL}")
+                print(f"  {Fore.GREEN}✓ Saved {len(browser_data['history'])} history entries to {history_file})
             
             # Save passwords
             if browser_data.get("passwords"):
                 passwords_file = f"{browser_filename}_passwords.json"
                 with open(passwords_file, "w", encoding="utf-8") as f:
                     json.dump(browser_data["passwords"], f, indent=2, default=str)
-                print(f"  {Fore.GREEN}✓ Saved {len(browser_data['passwords'])} passwords to {passwords_file}{Style.RESET_ALL}")
+                print(f"  {Fore.GREEN}✓ Saved {len(browser_data['passwords'])} passwords to {passwords_file})
         
         except Exception as e:
             logger.error(f"Failed to save {browser_name} data: {e}")
@@ -942,13 +942,13 @@ class BrowserDataExtractor:
             }
         }
         
-        print(f"\n{Fore.CYAN}Extracting data from all installed browsers...{Style.RESET_ALL}")
+        print(f"\n{Fore.CYAN}Extracting data from all installed browsers...)
         
         # Create progress bar
         with tqdm(total=len(self.installed_browsers), desc="Processing browsers", unit="browser") as pbar:
             for browser_id in self.installed_browsers:
                 config = BROWSER_CONFIGS[browser_id]
-                print(f"\n{Fore.YELLOW}Processing {config['name']}...{Style.RESET_ALL}")
+                print(f"\n{Fore.YELLOW}Processing {config['name']}...)
                 
                 browser_data = {
                     "cookies": {},
@@ -1040,7 +1040,7 @@ class BrowserDataExtractor:
                     self.save_browser_data(config["name"], browser_data)
                     self.extraction_stats["browsers_processed"] += 1
                     
-                    print(f"  {Fore.GREEN}✓ Completed {config['name']}{Style.RESET_ALL}")
+                    print(f"  {Fore.GREEN}✓ Completed {config['name']})
                 
                 except Exception as e:
                     logger.error(f"Failed to extract data from {config['name']}: {e}")
@@ -1053,7 +1053,7 @@ class BrowserDataExtractor:
         try:
             with open("all_browser_data.json", "w", encoding="utf-8") as f:
                 json.dump(all_data, f, indent=2, default=str)
-            print(f"\n{Fore.GREEN}✓ Saved consolidated data to all_browser_data.json{Style.RESET_ALL}")
+            print(f"\n{Fore.GREEN}✓ Saved consolidated data to all_browser_data.json)
         except Exception as e:
             logger.error(f"Failed to save consolidated data: {e}")
             self.errors.append(f"Failed to save consolidated data: {e}")
@@ -1064,16 +1064,16 @@ class BrowserDataExtractor:
         return all_data
     
     def print_summary(self):
-        print(f"{Fore.GREEN}Browsers processed: {self.extraction_stats['browsers_processed']}{Style.RESET_ALL}")
-        print(f"{Fore.GREEN}Total cookies extracted: {self.extraction_stats['total_cookies']}{Style.RESET_ALL}")
-        print(f"{Fore.GREEN}Total history entries: {self.extraction_stats['total_history']}{Style.RESET_ALL}")
-        print(f"{Fore.GREEN}Total passwords extracted: {self.extraction_stats['total_passwords']}{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}Browsers processed: {self.extraction_stats['browsers_processed']})
+        print(f"{Fore.GREEN}Total cookies extracted: {self.extraction_stats['total_cookies']})
+        print(f"{Fore.GREEN}Total history entries: {self.extraction_stats['total_history']})
+        print(f"{Fore.GREEN}Total passwords extracted: {self.extraction_stats['total_passwords']})
         
-        print(f"  - all_browser_data.json (consolidated data)")
-        print(f"  - [browser_name]_cookies.json (per-browser cookies)")
-        print(f"  - [browser_name]_history.json (per-browser history)")
-        print(f"  - [browser_name]_passwords.json (per-browser passwords)")
-        print(f"  - browser_extractor.log (detailed log)")
+        print(f"all_browser_data.json (consolidated data)")
+        print(f"[browser_name]_cookies.json (per-browser cookies)")
+        print(f"[browser_name]_history.json (per-browser history)")
+        print(f"[browser_name]_passwords.json (per-browser passwords)")
+        print(f"browser_extractor.log (detailed log)")
     
     @staticmethod
     def chrome_time_to_datetime(chrome_time):
